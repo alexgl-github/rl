@@ -16,5 +16,5 @@ gym==0.17.3
 ## To run:
 
 ```
-python3 ppo.py  --recurrent --play
+python3 ppo.py
 ```

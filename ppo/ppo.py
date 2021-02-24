@@ -94,9 +94,10 @@ class actor_critic(Model):
 
 class Plot:
 
-    def __init__(self):
+    def __init__(self, title=""):
         plt.ion()
         self.fig = plt.figure()
+        plt.title(title)
         self.ax = self.fig.add_subplot(111)
         self.y = np.zeros((0,))
         self.x =  np.zeros((0,))
@@ -201,7 +202,7 @@ class Agent:
 
 
     def run(self):
-        plot = Plot()
+        plot = Plot("Avg score")
         episode, score, done = 0, 0, False
         for episode in range(self.num_episodes):
             state = self.env.reset()
@@ -270,13 +271,15 @@ class Agent:
 def get_args():
     parser = argparse.ArgumentParser(description='RL')
     parser.add_argument('--cuda', action='store_true', default=False, help='use CUDA')
-    parser.add_argument('--recurrent', action='store_true', default=False, help='on: use RNN; off: use Dense')
-    parser.add_argument('--play', action='store_true', default=False, help='play test')
+    parser.add_argument('--no_recurrent', action='store_true', default=False, help='on: use Dense; off: use RNN for feature extraction')
+    parser.add_argument('--no_play', action='store_true', default=False, help='play test')
     parser.add_argument('--no_plot', action='store_true', default=False, help='disable average score plot ')
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--env', type=str, default="LunarLander-v2", help='gym environment name')
     args = parser.parse_args()
     args.plot = not args.no_plot
+    args.play  = not args.no_play
+    args.recurrent  = not args.no_recurrent
     return args
 
 

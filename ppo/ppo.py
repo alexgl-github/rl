@@ -239,6 +239,7 @@ class Agent:
                 score += reward
 
                 if done:
+
                     score_average = self.update_score(score)
 
                     if (score_average > self.max_score_avg * 1.2):

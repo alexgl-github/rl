@@ -6,7 +6,7 @@ import copy
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Model, load_model
-from tensorflow.keras.layers import Input, Dense, GRU
+from tensorflow.keras.layers import Input, Dense, GRU, LSTM
 from tensorflow.keras.optimizers import Adam, RMSprop
 from tensorflow.keras import backend as K
 import matplotlib.pyplot as plt
@@ -15,7 +15,7 @@ import time
 
 class actor_critic(Model):
 
-    def __init__(self, num_actions, input_dim=(1, 8), hidden_dim=200, recurrent=False):
+    def __init__(self, num_actions, input_dim=(1, 8), hidden_dim=300, recurrent=False):
         super(actor_critic, self).__init__()
         self.num_actions = num_actions
         self.hidden_dim = hidden_dim
@@ -24,14 +24,14 @@ class actor_critic(Model):
         self.features = self.make_features()
         self.actor = self.make_actor()
         self.critic = self.make_critic()
-        self.clipping = 0.2
+        self.k_clipping = 0.2
         self.k_entropy = 0.001
         self.eps = 1e-10
 
     def make_features(self):
         m = tf.keras.Sequential()
         if self.recurrent:
-            m.add(GRU(units=self.hidden_dim, return_sequences=False, input_shape=self.input_dim, activation="tanh"))
+            m.add(LSTM(units=self.hidden_dim, return_sequences=False, input_shape=self.input_dim, activation="tanh"))
         else:
             m.add(Dense(512, activation="tanh"))
             m.add(Dense(512, activation="tanh"))
@@ -63,7 +63,7 @@ class actor_critic(Model):
         old_prob = K.clip(old_prob, self.eps, 1.0)
         ratio = K.exp(K.log(prob) - K.log(old_prob))
         surr_loss1 = ratio * advantages
-        surr_loss2 = K.clip(ratio, min_value = 1 - self.clipping, max_value = 1 + self.clipping) * advantages
+        surr_loss2 = K.clip(ratio, min_value = 1 - self.k_clipping, max_value = 1 + self.k_clipping) * advantages
         actor_loss = -K.mean(K.minimum(surr_loss1, surr_loss2))
         entropy = -(y_pred * K.log(y_pred + self.eps))
         entropy = self.k_entropy * K.mean(entropy)
@@ -72,8 +72,7 @@ class actor_critic(Model):
 
 
     def loss_critic(self, values, y_true, y_pred):
-        LOSS_CLIPPING = 0.2
-        clipped_value_loss = values + K.clip(y_pred - values, -self.clipping, self.clipping)
+        clipped_value_loss = values + K.clip(y_pred - values, -self.k_clipping, self.k_clipping)
         v_loss1 = (y_true - clipped_value_loss) ** 2
         v_loss2 = (y_true - y_pred) ** 2
         value_loss = 0.5 * K.mean(K.maximum(v_loss1, v_loss2))
@@ -117,7 +116,7 @@ class Plot:
 
 class Agent:
 
-    def __init__(self, env_name = "LunarLander-v2", lr=0.0001, play=False, recurrent=False, plot=True):
+    def __init__(self, env_name = "LunarLander-v2", lr=0.0001, play_period=100, recurrent=False, plot=True):
         self.env = gym.make(env_name)
         self.action_size = self.env.action_space.n
         self.state_size = self.env.observation_space.shape
@@ -129,7 +128,7 @@ class Agent:
         self.ac = actor_critic(num_actions=self.action_size, recurrent=recurrent)
         self.replay_epochs = 10 # update policy for 10 epochs
         self.max_score_avg = 0
-        self.play = play
+        self.play_period = play_period
         self.plot = plot
 
 
@@ -202,8 +201,11 @@ class Agent:
 
 
     def run(self):
+
         plot = Plot("Avg score")
         episode, score, done = 0, 0, False
+        score_average = 0
+
         for episode in range(self.num_episodes):
             state = self.env.reset()
             done = False
@@ -214,6 +216,11 @@ class Agent:
             rewards, dones = [], []
             num_steps = 0
             t_start = time.time()
+            episode += 1
+
+            if self.max_score_avg > 250:
+                print(f"completed in {episode}  average score={self.max_score_average};")
+                break
 
             while not done:
                 action, action_onehot, prob = self.action(state)
@@ -232,20 +239,23 @@ class Agent:
                 score += reward
 
                 if done:
-                    episode += 1
                     score_average = self.update_score(score)
 
-                    if (score_average > self.max_score_avg):
-                        self.max_score_avg = score_average * 1.2
+                    if (score_average > self.max_score_avg * 1.2):
+                        self.max_score_avg = score_average
                         self.lr = self.lr * 0.95;
                         K.set_value(self.optimizer.learning_rate, self.lr)
-                        print(f"new max average={score_average}; new learning rate={self.lr:.5f}")
-                        y1 = self.actor.model.predict(states[0])
-                        self.actor.model.save("models/actor")
+                        print(f"new max average={score_average}; new learning rate={self.lr:.7f}")
+
+                    if False: # save model
+                        y1 = self.ac.critique(tf.convert_to_tensor(states, dtype=tf.float32))
+                        y2 = self.ac.act(tf.convert_to_tensor(states, dtype=tf.float32))
+                        self.ac.save("models/actor")
                         print("saved model as models/actor")
 
-                        if self.play:
-                            self.test()
+
+                    if self.play_period > 0 and (episode % self.play_period) == 0:
+                        self.test()
 
                     if self.plot:
                         plot.update(score_average)
@@ -274,11 +284,11 @@ def get_args():
     parser.add_argument('--no_recurrent', action='store_true', default=False, help='on: use Dense; off: use RNN for feature extraction')
     parser.add_argument('--no_play', action='store_true', default=False, help='play test')
     parser.add_argument('--no_plot', action='store_true', default=False, help='disable average score plot ')
-    parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
+    parser.add_argument('--lr', type=float, default=0.0001, help='learning rate')
     parser.add_argument('--env', type=str, default="LunarLander-v2", help='gym environment name')
     args = parser.parse_args()
     args.plot = not args.no_plot
-    args.play  = not args.no_play
+    args.play_period = 0 if args.no_play else 100
     args.recurrent  = not args.no_recurrent
     return args
 
@@ -302,5 +312,8 @@ if __name__ == "__main__":
     else:
         os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
-    agent = Agent(env_name=args.env, recurrent=args.recurrent, lr=args.lr, play=args.play, plot=args.plot)
+    agent = Agent(env_name=args.env, recurrent=args.recurrent, lr=args.lr, play_period=args.play_period, plot=args.plot)
     agent.run()
+
+    while True:
+        agent.test()

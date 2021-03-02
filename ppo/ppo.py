@@ -15,7 +15,7 @@ import time
 
 class actor_critic(Model):
 
-    def __init__(self, num_actions, input_dim=(1, 8), hidden_dim=300, recurrent=False):
+    def __init__(self, num_actions, input_dim=(1, 8), hidden_dim=300, recurrent=False, k_entropy = 0.01):
         super(actor_critic, self).__init__()
         self.num_actions = num_actions
         self.hidden_dim = hidden_dim
@@ -25,7 +25,7 @@ class actor_critic(Model):
         self.actor = self.make_actor()
         self.critic = self.make_critic()
         self.k_clipping = 0.2
-        self.k_entropy = 0.001
+        self.k_entropy = k_entropy
         self.eps = 1e-10
 
     def make_features(self):
@@ -33,8 +33,7 @@ class actor_critic(Model):
         if self.recurrent:
             m.add(LSTM(units=self.hidden_dim, return_sequences=False, input_shape=self.input_dim, activation="tanh"))
         else:
-            m.add(Dense(512, activation="tanh"))
-            m.add(Dense(512, activation="tanh"))
+            m.add(Dense(512, activation="relu", dtype=tf.float32))
         return m
 
 
@@ -56,6 +55,10 @@ class actor_critic(Model):
         return m
 
 
+    def entropy(self, prob):
+        entropy = -K.mean((prob * K.log(prob + self.eps)))
+        return entropy
+
     def loss_actor(self, advantages, action_probs, actions_onehot, y_pred):
         prob = actions_onehot * y_pred
         prob = K.clip(prob, self.eps, 1.0)
@@ -64,10 +67,9 @@ class actor_critic(Model):
         ratio = K.exp(K.log(prob) - K.log(old_prob))
         surr_loss1 = ratio * advantages
         surr_loss2 = K.clip(ratio, min_value = 1 - self.k_clipping, max_value = 1 + self.k_clipping) * advantages
-        actor_loss = -K.mean(K.minimum(surr_loss1, surr_loss2))
-        entropy = -(y_pred * K.log(y_pred + self.eps))
-        entropy = self.k_entropy * K.mean(entropy)
-        loss_total = actor_loss - entropy
+        actor_loss = K.mean(K.minimum(surr_loss1, surr_loss2))
+        ent = self.k_entropy * self.entropy(y_pred)
+        loss_total = -actor_loss - ent
         return loss_total
 
 
@@ -90,64 +92,89 @@ class actor_critic(Model):
         v = self.critic(feat)
         return v
 
-
 class Plot:
 
-    def __init__(self, title=""):
+    def __init__(self, num_subplots=1, title=None, subplot_title=None):
         plt.ion()
         self.fig = plt.figure()
         plt.title(title)
-        self.ax = self.fig.add_subplot(111)
-        self.y = np.zeros((0,))
-        self.x =  np.zeros((0,))
-        self.line, = self.ax.plot(self.x, self.y, 'r-')
 
+        self.ax = []
+        for idx in range(num_subplots):
+            ax = plt.subplot(num_subplots, 1, idx+1)
+            self.ax.append(ax)
 
-    def update(self, value):
-        self.y = np.append(self.y, value)
-        self.x = [i for i in range(0, len(self.y))]
-        self.ax.relim()
-        self.ax.autoscale_view()
-        self.line.set_ydata(self.y)
-        self.line.set_xdata(self.x)
+        self.x = []
+        self.y = []
+        for idx in range(num_subplots):
+            self.y.append(np.zeros((0,)))
+            self.x.append(np.zeros((0,)))
+
+        self.line = []
+        for idx in range(num_subplots):
+            line, = self.ax[idx].plot(self.x[idx], self.y[idx], 'b-')
+            self.line.append(line)
+
+        for idx in range(num_subplots):
+             self.ax[idx].title.set_text(subplot_title[idx])
+
+    def update(self, value, idx):
+        self.y[idx] = np.append(self.y[idx], value)
+        self.x[idx] = [i for i in range(0, len(self.y[idx]))]
+        self.ax[idx].relim()
+        self.ax[idx].autoscale_view()
+        self.line[idx].set_ydata(self.y[idx])
+        self.line[idx].set_xdata(self.x[idx])
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
 
 class Agent:
 
-    def __init__(self, env_name = "LunarLander-v2", lr=0.0001, play_period=100, recurrent=False, plot=True):
+    def __init__(self, env_name = "LunarLander-v2", lr=0.0001, k_entropy=0.01, play_period=100, recurrent=False, plot=True):
         self.env = gym.make(env_name)
+        print(f"env_name={env_name} max_episode_steps={self.env._max_episode_steps} reward_threshold={self.env.spec.reward_threshold}")
         self.action_size = self.env.action_space.n
         self.state_size = self.env.observation_space.shape
         self.num_episodes = 10000
         self.lr = lr
-        self.eps = 1e-5
-        self.optimizer  = tf.keras.optimizers.Adam(learning_rate=self.lr, epsilon=self.eps)
+        self.beta_1 = 0.9
+        self.eps = 1e-10
+        self.optimizer  = tf.keras.optimizers.Adam(learning_rate=self.lr, beta_1=self.beta_1, epsilon=self.eps)
         self.scores = np.zeros(0)
-        self.ac = actor_critic(num_actions=self.action_size, recurrent=recurrent)
+        self.entropies = np.zeros(0)
+        self.ac = actor_critic(num_actions=self.action_size, input_dim=(1, self.state_size[0]),  recurrent=recurrent, k_entropy=k_entropy)
         self.replay_epochs = 10 # update policy for 10 epochs
         self.max_score_avg = 0
         self.play_period = play_period
         self.plot = plot
 
 
+    def sample(self, probs):
+        logits = np.log(probs)
+        noise = np.random.uniform(size=logits.shape)
+        return np.argmax(logits - np.log(-np.log(noise)))
+
+
     def action(self, state):
         if self.ac.recurrent:
-            action_probs = self.ac.act(np.reshape(state, (1, 1, state.shape[-1])))
+            state = tf.convert_to_tensor(np.reshape(state, (1, 1, state.shape[-1])), dtype=tf.float32)
+            action_probs = self.ac.act(state)
         else:
             action_probs = self.ac.act(np.reshape(state, (1, state.shape[-1])))
-        action = np.random.choice(self.action_size, p=np.squeeze(action_probs))
+        #action = np.random.choice(self.action_size, p=np.squeeze(action_probs))
+        action = self.sample(action_probs)
         action_onehot = np.zeros([self.action_size])
         action_onehot[action] = 1
         return action, action_onehot, action_probs
 
-    def update_score(self, score):
-        self.scores = np.append(self.scores, score)
-        if len(self.scores) > 50:
-            self.scores = self.scores[-50:]
-        avg = np.mean(self.scores)
-        return avg
+
+    def update_average(self, values, value):
+        values = np.append(values, value)
+        if len(values) > 50:
+            values = values[-50:]
+        avg = np.mean(values)
+        return avg, values
 
 
     def get_gaes(self, rewards, dones, values, next_values, gamma = 0.99, lamda = 0.9, normalize=True):
@@ -200,11 +227,19 @@ class Agent:
         return loss_actor_avg, loss_critic_avg
 
 
+    def entropy(self, probs):
+        entropy = np.mean(-np.sum(probs * np.log(probs + 1e-10), axis=-1), axis=-1)
+        return entropy
+
     def run(self):
 
-        plot = Plot("Avg score")
+        plot = Plot(num_subplots=2, subplot_title=["average score", "entropy"])
         episode, score, done = 0, 0, False
         score_average = 0
+
+        if self.play_period > 0:
+            r = self.test()
+            print(f"reward={r}")
 
         for episode in range(self.num_episodes):
             state = self.env.reset()
@@ -218,8 +253,8 @@ class Agent:
             t_start = time.time()
             episode += 1
 
-            if self.max_score_avg > 250:
-                print(f"completed in {episode}  average score={self.max_score_average};")
+            if self.max_score_avg > self.env.spec.reward_threshold:
+                print(f"completed in {episode}  average score={self.max_score_avg}  reward_threshold={self.env.spec.reward_threshold}")
                 break
 
             while not done:
@@ -240,13 +275,15 @@ class Agent:
 
                 if done:
 
-                    score_average = self.update_score(score)
+                    score_average, self.scores = self.update_average(self.scores, score)
+                    entropy = self.entropy(action_probs)
+                    entropy_average, self.entropies = self.update_average(self.entropies, entropy)
 
                     if (score_average > self.max_score_avg * 1.2):
                         self.max_score_avg = score_average
-                        self.lr = self.lr * 0.95;
+                        self.lr = self.lr * 0.99;
                         K.set_value(self.optimizer.learning_rate, self.lr)
-                        print(f"new max average={score_average}; new learning rate={self.lr:.7f}")
+                        print(f"new max average={score_average}/{self.env.spec.reward_threshold}; new learning rate={self.lr:.7f}")
 
                     if False: # save model
                         y1 = self.ac.critique(tf.convert_to_tensor(states, dtype=tf.float32))
@@ -256,15 +293,18 @@ class Agent:
 
 
                     if self.play_period > 0 and (episode % self.play_period) == 0:
-                        self.test()
-
-                    if self.plot:
-                        plot.update(score_average)
+                        r = self.test()
+                        print(f"episode={episode} test reward={r}")
 
                     loss_actor, loss_critic = self.replay(states, actions, rewards, action_probs, dones, next_states)
+
                     t_end = time.time()
-                    print("episode: {}/{} fps={:.2f} score: {:.2f}, average: {:.2f} loss actor={:.5f} critic={:.5f} num states={:d}"\
-                          .format(episode,  self.num_episodes, num_steps / (t_end - t_start),score, score_average, loss_actor, loss_critic, len(states)))
+                    print("episode: {}/{} fps={:.2f} score last/avg/max: {:.2f}/{:.2f}/{:.2f} loss actor={:.5f} critic={:.5f} entropy={:.5f} sequence len={:d}"\
+                          .format(episode,  self.num_episodes, num_steps / (t_end - t_start), score, score_average, self.max_score_avg, loss_actor, loss_critic, entropy_average, len(states)))
+
+                    if self.plot:
+                        plot.update(value=score_average, idx=0)
+                        plot.update(value=entropy_average, idx=1)
 
                     state  = self.env.reset()
                     score = 0
@@ -277,7 +317,7 @@ class Agent:
             action, _, _ = self.action(state)
             state, reward, done, _ = self.env.step(action)
             self.env.render()
-
+        return reward
 
 def get_args():
     parser = argparse.ArgumentParser(description='RL')
@@ -287,15 +327,16 @@ def get_args():
     parser.add_argument('--no_plot', action='store_true', default=False, help='disable average score plot ')
     parser.add_argument('--lr', type=float, default=0.0001, help='learning rate')
     parser.add_argument('--env', type=str, default="LunarLander-v2", help='gym environment name')
+    parser.add_argument('--ke', type=float, default=0.01, help='entopy coefficient')
     args = parser.parse_args()
     args.plot = not args.no_plot
-    args.play_period = 0 if args.no_play else 100
+    args.play_period = 0 if args.no_play else 50
     args.recurrent  = not args.no_recurrent
     return args
 
 
-if __name__ == "__main__":
-
+def main():
+    #print(gym.envs.registry.all())
     args = get_args()
     print(f"ARGS:")
     for arg in vars(args):
@@ -313,8 +354,12 @@ if __name__ == "__main__":
     else:
         os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
-    agent = Agent(env_name=args.env, recurrent=args.recurrent, lr=args.lr, play_period=args.play_period, plot=args.plot)
+    agent = Agent(env_name=args.env, recurrent=args.recurrent, lr=args.lr, play_period=args.play_period, plot=args.plot, k_entropy=args.ke)
     agent.run()
 
     while True:
         agent.test()
+
+
+if __name__ == "__main__":
+    main()

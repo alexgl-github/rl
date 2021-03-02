@@ -1,4 +1,4 @@
-# 1. TF2.0 / Keras implementation of Proximal Policy Optimization (PPO) algorithm.
+# 1. TF2.0 Keras implementation of Proximal Policy Optimization (PPO) algorithm.
 
 ppo/ppo.py
 
@@ -13,8 +13,16 @@ tensorflow>=2.0
 gym==0.17.3
 ```
 
-## To run:
+## Command example
 
 ```
-python3 ppo/ppo.py
+python3 src/ppo.py
+```
+
+#  TF2.0 Keras implementation of Actor Critic algorithm.
+
+## Command example
+
+```
+python3 src/ac.py
 ```

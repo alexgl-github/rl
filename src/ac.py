@@ -44,7 +44,6 @@ class policy_ac(Model):
         m = tf.keras.Sequential(name="featues")
         if self.recurrent:
             input_shape=(1, )+self.input_dim
-            print("--->>> recurrent ", input_shape)
             m.add(GRU(units=self.hidden_dim, return_sequences=False, batch_input_shape=input_shape, activation="tanh", stateful=True))
         else:
             m.add(Flatten())
@@ -96,6 +95,7 @@ class policy_ac(Model):
         if self.recurrent:
             self.features.reset_states()
 
+
 class agent_ac:
 
 
@@ -137,7 +137,7 @@ class agent_ac:
 
 
     def update_average(self, values, value):
-        nsamples = 30
+        nsamples = 50
         values = np.append(values, value)
         if len(values) > nsamples:
             values = values[-nsamples:]
@@ -234,29 +234,26 @@ class agent_ac:
 
 
     def replay(self, actions_history, action_probs_history, critic_values_history, rewards_history):
-        # actions_history, action_probs_history, critic_values_history, rewards_history are python lists
+        #
+        # Inputs actions_history, action_probs_history, critic_values_history, rewards_history are python lists
+        #
 
         # compute discounted rewards
-        returns = []
-        discounted_sum = 0
-        for r in rewards_history[::-1]:
-            discounted_sum = r + self.gamma * discounted_sum
-            returns.insert(0, discounted_sum)
+        discounted_rewards = np.empty_like(rewards_history, dtype='float32')
+        discounted_rewards[-1] = rewards_history[-1]
+        for idx in range(len(discounted_rewards)-2, -1, -1):
+            discounted_rewards[idx] = rewards_history[idx] + self.gamma * discounted_rewards[idx+1]
 
-        returns = np.array(returns)
-        returns = (returns - np.mean(returns)) / (np.std(returns) + self.eps)
-        returns = returns.tolist()
+        discounted_rewards = (discounted_rewards - np.mean(discounted_rewards)) / (np.std(discounted_rewards) + self.eps)
+
 
         # compute losses
-        returns = tf.stack(returns)
+        discounted_rewards = tf.stack(discounted_rewards)
         critic_values_history = tf.stack(critic_values_history)
         action_probs_history = tf.stack(action_probs_history)
         actions_history = tf.stack(actions_history)
-        actor_loss = self.policy.actor_loss(returns, critic_values_history, action_probs_history, actions_history)
-        critic_loss = self.policy.critic_loss(critic_values_history, returns)
-
-        #print(f"actor_loss={actor_loss} actor_loss2={actor_loss2}")
-        #print(f"critic_loss={critic_loss} critic_loss2={critic_loss2}")
+        actor_loss = self.policy.actor_loss(discounted_rewards, critic_values_history, action_probs_history, actions_history)
+        critic_loss = self.policy.critic_loss(critic_values_history, discounted_rewards)
 
         return actor_loss, critic_loss
 

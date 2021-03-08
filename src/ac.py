@@ -20,7 +20,7 @@ from utils import Plot
 
 class policy_ac(Model):
 
-    def __init__(self, num_actions, input_dim=(1, 8), hidden_dim=128, recurrent=False, k_entropy = 0.01):
+    def __init__(self, num_actions, input_dim=(1, 8), hidden_dim=256, recurrent=False, k_entropy = 0.01):
         super(policy_ac, self).__init__()
         self.num_actions = num_actions
         self.hidden_dim = hidden_dim

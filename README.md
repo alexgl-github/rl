@@ -1,8 +1,4 @@
-# 1. TF2.0 Keras implementation of Proximal Policy Optimization (PPO) algorithm.
-
-ppo/ppo.py
-
-For more information, see OpenAI [PPO](https://openai.com/blog/openai-baselines-ppo/) page.
+# 1. TF2.0 Keras implementation of reinforcement learning algorithms
 
 
 ## Requirements:
@@ -13,15 +9,15 @@ tensorflow>=2.0
 gym==0.17.3
 ```
 
-## Command example
+## Proximal Policy Optimization (PPO) algorithm.
+
+For more information, see OpenAI [PPO](https://openai.com/blog/openai-baselines-ppo/) page.
 
 ```
-python3 src/ppo.py
+$ python3 src/ppo.py
 ```
 
-#  TF2.0 Keras implementation of Actor Critic algorithm.
-
-## Command example
+## Actor Critic algorithm.
 
 ```
 python3 src/ac.py

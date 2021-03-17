@@ -40,7 +40,6 @@ class ActorCritic(Model):
 
 
     def loss_actor(self, advantages, probs, actions, y_pred):
-
         actions_onehot = tf.one_hot(actions, self.action_space, dtype=tf.float64)
         prob = tf.reduce_sum(actions_onehot * y_pred, axis=-1)
         old_prob = tf.reduce_sum(actions_onehot * probs, axis=-1)
@@ -71,7 +70,7 @@ class Agent:
     def __init__(self, env_name, k_entropy=0.1, lr=1e-3, num_episodes=10000, render_period=0, plot=True):
         self.env_name = env_name
         self.env = gym.make(env_name)
-        self.env._max_episode_steps = self.env.spec.reward_threshold * 3 // 2
+        self.env._max_episode_steps = self.env.spec.reward_threshold * 2
         print(f"env_name={env_name} max_episode_steps={self.env._max_episode_steps} reward_threshold={self.env.spec.reward_threshold}")
         self.num_actions = self.env.action_space.n
         self.state_size = self.env.observation_space.shape
@@ -96,12 +95,18 @@ class Agent:
         avg = np.mean(values)
         return avg, values
 
+    def sample(self, probs):
+        logits = np.log(probs)
+        noise = np.random.uniform(size=logits.shape)
+        return np.argmax(logits - np.log(-np.log(noise)))
+
     def act(self, state):
         prob, value = self.ac(state)
         prob = prob[0] # batch of 1
         value = value[0] # batch of 1
-        assert np.abs(np.sum(prob) - 1.0) <= self.eps, "prob probabilities don't sum up to 1.0 prob={}".format(prob)
-        action = np.random.choice(self.num_actions, p=prob)
+        assert np.abs(np.sum(prob) - 1.0) <= 1e-5, "prob probabilities don't sum up to 1.0 prob={} sum={}".format(prob, np.sum(prob))
+        #action = np.random.choice(self.num_actions, p=prob)
+        action = self.sample(prob)
         return action, prob, value
 
     def get_gaes(self, rewards, dones, values, next_values):
@@ -131,6 +136,7 @@ class Agent:
             while not done:
                 if self.render_period > 0 and episode % self.render_period == 0:
                     self.env.render()
+                state = state.astype(np.float64)
                 action, prob, value = self.act(state)
                 next_state, reward, done, _ = self.env.step(action)
                 states.append(state)
@@ -146,7 +152,7 @@ class Agent:
                     loss_actor, loss_critic, entropy = self.replay(states, actions, rewards, probs, values, dones, next_state)
                     average_score, self.scores = self.update_average(self.scores, score)
                     average_entropy, self.entropies = self.update_average(self.entropies, entropy)
-                    print("episode: {}/{}, score: {}, average: {:.2f} loss actor={:.4f} critic={:.4f} entropy={:.4f} num states={}"
+                    print("episode: {}/{}, score: {:.2f}, average: {:.2f} loss actor={:.4f} critic={:.4f} entropy={:.4f} num states={}"
                           .format(episode, self.num_episodes, score, average_score, loss_actor, loss_critic, average_entropy, len(states)))
 
                     if self.plot:
@@ -205,7 +211,7 @@ class Agent:
         while not done:
             if self.render_period >= 0:
                 self.env.render()
-            probs, _ = self.ac(state)
+            probs, _ = self.ac(state.astype(np.float64))
             action = np.argmax(probs[0])
             state, reward, done, _ = self.env.step(action)
             state = np.reshape(state, [1, self.state_size[0]])
@@ -232,6 +238,7 @@ def get_args():
 
 
 def main():
+    tf.keras.backend.set_floatx('float64')
     args = get_args()
     print(f"PPO args:")
     for arg in vars(args):
